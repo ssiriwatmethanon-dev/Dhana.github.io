@@ -1,0 +1,592 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  LayoutDashboard, ClipboardList, Wrench, ShoppingBag, 
+  Droplets, Zap, Plus, Bell, FileSpreadsheet, Search, 
+  Calendar, X, Edit2, Trash2, CheckCircle2, Clock, 
+  RotateCcw, PauseCircle, Menu, TrendingUp, AlertCircle, Save,
+  ArrowRight, FileText, Landmark
+} from 'lucide-react';
+import { 
+  PieChart, Pie, Cell, ResponsiveContainer, 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, 
+  AreaChart, Area 
+} from 'recharts';
+import * as XLSX from 'xlsx';
+
+// --- Global Config & Mock Data ---
+const STATUS_OPTIONS = ['กำลังดำเนินการ', 'ขออนุมัติ', 'รออนุมัติ', 'รอดำเนินการ', 'เสร็จสิ้น'];
+
+const INITIAL_DATA = {
+  tasks: [
+    { id: 't1', date: '2026-04-08', subject: 'ทำรายงานประชุม', details: 'สรุปวาระการประชุมประจำเดือน', responsible: 'ธนาวินท์', dueDate: '2026-04-10', cost: 0, remark: '-', status: 'เสร็จสิ้น' },
+  ],
+  repairs: [
+    { id: 'r1', date: '2026-04-01', department: 'ไอที', item: 'เปลี่ยนจอภาพ', details: 'จอภาพเสีย มีเส้นขึ้น', responsible: 'สมชาย', startDate: '2026-04-01', endDate: '2026-04-02', budget: 4500, remark: 'ประกันหมด', status: 'เสร็จสิ้น' },
+  ],
+  requisitions: [
+    { id: 'q1', date: '2026-04-05', department: 'ธุรการ', docReq: 'REQ-001', docWithdraw: 'WD-001', value: 1200 },
+    { id: 'q2', date: '2026-04-06', department: 'บัญชี', docReq: 'REQ-002', docWithdraw: 'WD-002', value: 800 },
+  ],
+  water: [
+    { id: 'w1', date: '2026-04-16', prevReading: 1250, currReading: 1280, units: 30, value: 450 },
+    { id: 'w0', date: '2025-04-16', prevReading: 1200, currReading: 1235, units: 35, value: 520 }, // Last year
+  ],
+  electric: [
+    { id: 'e1', date: '2026-04-16', prevReading: 4500, currReading: 4850, units: 350, value: 1750 },
+    { id: 'e0', date: '2025-04-16', prevReading: 4200, currReading: 4400, units: 200, value: 1000 }, // Last year
+  ]
+};
+
+const COLORS = {
+  purple: '#a855f7', blue: '#3b82f6', green: '#10b981', 
+  yellow: '#eab308', orange: '#f97316', cyan: '#06b6d4',
+  chart: ['#a855f7', '#3b82f6', '#10b981', '#f97316', '#eab308']
+};
+
+interface FormItem {
+  id: string;
+  date: string;
+  [key: string]: any;
+}
+
+const App = () => {
+  const [activeSection, setActiveSection] = useState('tasks');
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [data, setData] = useState(INITIAL_DATA);
+  const [showModal, setShowModal] = useState(false);
+  const [editingItem, setEditingItem] = useState<FormItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState<string>('');
+
+  // Initialize selected month to current month
+  useEffect(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    setSelectedMonth(`${year}-${month}`);
+  }, []);
+
+  // --- Calculations ---
+  const currentItems = useMemo(() => (data as any)[activeSection] || [], [data, activeSection]);
+  
+  // Filter items by selected month
+  const filteredItems = useMemo(() => {
+    if (!selectedMonth) return currentItems;
+    return (currentItems as any[]).filter((item: any) => {
+      const itemDate = item.date.substring(0, 7); // YYYY-MM format
+      return itemDate === selectedMonth;
+    });
+  }, [currentItems, selectedMonth]);
+  
+  const stats = useMemo(() => {
+    const items = filteredItems as any[];
+    if (activeSection === 'tasks' || activeSection === 'repairs') {
+      const counts: Record<string, number> = STATUS_OPTIONS.reduce((acc: Record<string, number>, status: string) => {
+        acc[status] = items.filter((i: any) => i.status === status).length;
+        return acc;
+      }, {} as Record<string, number>);
+      
+      const chartData = STATUS_OPTIONS.map((name, i) => ({
+        name, value: counts[name], color: COLORS.chart[i]
+      })).filter(d => d.value > 0);
+
+      return { total: items.length, counts, chartData };
+    }
+    return { total: items.length, counts: {}, chartData: [] };
+  }, [filteredItems, activeSection]);
+
+  // Special Stats for Bills
+  const billAnalysis = useMemo(() => {
+    if (activeSection !== 'water' && activeSection !== 'electric') return null;
+    const sorted = [...(filteredItems as any[])].sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const current = sorted[0] || { value: 0 };
+    const lastYear = sorted.find((i: any) => {
+      const d1 = new Date(i.date);
+      const d2 = new Date(current.date);
+      return d1.getFullYear() === d2.getFullYear() - 1 && d1.getMonth() === d2.getMonth();
+    }) || { value: 0 };
+    const diff = current.value - lastYear.value;
+    return { current, lastYear, diff };
+  }, [filteredItems, activeSection]);
+
+  // --- Handlers ---
+  const handleSave = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const newItem: any = Object.fromEntries(formData.entries());
+    newItem.id = editingItem ? editingItem.id : Date.now().toString();
+    
+    // Numeric conversions
+    if (newItem.cost) newItem.cost = Number(newItem.cost);
+    if (newItem.budget) newItem.budget = Number(newItem.budget);
+    if (newItem.value) newItem.value = Number(newItem.value);
+    if (newItem.units) newItem.units = Number(newItem.units);
+    if (newItem.prevReading) newItem.prevReading = Number(newItem.prevReading);
+    if (newItem.currReading) newItem.currReading = Number(newItem.currReading);
+
+    setData(prev => ({
+      ...prev,
+      [activeSection]: editingItem 
+        ? (prev as any)[activeSection].map((i: any) => i.id === newItem.id ? newItem : i)
+        : [newItem, ...(prev as any)[activeSection]]
+    }));
+    setShowModal(false);
+    setEditingItem(null);
+  };
+
+  const deleteItem = (id: string) => {
+    if (window.confirm('ยืนยันการลบข้อมูล?')) {
+      setData(prev => ({
+        ...prev,
+        [activeSection]: (prev as any)[activeSection].filter((i: any) => i.id !== id)
+      }));
+    }
+  };
+
+  const exportToExcel = () => {
+    const items = filteredItems as any[];
+    if (items.length === 0) {
+      alert('ไม่มีข้อมูลในเดือนที่เลือก');
+      return;
+    }
+
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    
+    // Prepare data for Excel
+    const excelData = items.map((item: any) => {
+      const row: any = {};
+      Object.keys(item).forEach(key => {
+        if (key !== 'id') {
+          row[key] = item[key];
+        }
+      });
+      return row;
+    });
+
+    // Add worksheet
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    
+    // Set column widths
+    const columnWidths = Object.keys(excelData[0] || {}).map(() => 15);
+    ws['!cols'] = columnWidths.map(width => ({ wch: width }));
+
+    // Add sheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, activeSection);
+
+    // Generate filename with month
+    const monthName = new Date(selectedMonth + '-01').toLocaleDateString('th-TH', { year: 'numeric', month: 'long' });
+    const filename = `${activeSection}_${selectedMonth}_${monthName}.xlsx`;
+
+    // Save file
+    XLSX.writeFile(wb, filename);
+  };
+
+  const exportCSV = () => {
+    const items = filteredItems as any[];
+    if (items.length === 0) return;
+    const headers = Object.keys(items[0]).join(',');
+    const rows = items.map((i: any) => Object.values(i).join(',')).join('\n');
+    const blob = new Blob(["\ufeff" + headers + '\n' + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${activeSection}_${selectedMonth}.csv`;
+    link.click();
+  };
+
+  // --- Components ---
+  const SidebarItem = ({ id, label, icon: Icon }: { id: string; label: string; icon: any }) => (
+    <button
+      onClick={() => { setActiveSection(id); setActiveTab('dashboard'); setIsSidebarOpen(false); }}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+        activeSection === id ? 'bg-purple-600/10 text-purple-400 border border-purple-600/20 font-bold' : 'text-slate-400 hover:bg-slate-900 hover:text-white'
+      }`}
+    >
+      <Icon size={18} />
+      <span className="text-sm">{label}</span>
+    </button>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0c] text-slate-200 font-prompt">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
+        .font-prompt { font-family: 'Prompt', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+      `}</style>
+
+      {/* Sidebar */}
+      <div className={`fixed inset-0 z-50 bg-black/60 lg:hidden transition-opacity ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
+      <aside className={`fixed top-0 left-0 h-full w-64 bg-[#0f0f13] border-r border-slate-800 z-50 transition-transform duration-300 lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="p-6">
+          <div className="flex items-center gap-3 mb-10">
+            <div className="w-10 h-10 bg-purple-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-purple-600/20">
+              <Landmark size={20} />
+            </div>
+            <div className="overflow-hidden">
+              <h1 className="text-sm font-bold text-white leading-tight truncate">ธนาวินท์ สิริวัฒนเมธานนท์</h1>
+              <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">Management System</p>
+            </div>
+          </div>
+          <nav className="space-y-1.5">
+            <SidebarItem id="tasks" label="การติดตามงาน" icon={ClipboardList} />
+            <SidebarItem id="repairs" label="งานซ่อม" icon={Wrench} />
+            <SidebarItem id="requisitions" label="การเบิกใช้" icon={ShoppingBag} />
+            <SidebarItem id="water" label="ค่าน้ำ" icon={Droplets} />
+            <SidebarItem id="electric" label="ค่าไฟ" icon={Zap} />
+          </nav>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="lg:ml-64 min-h-screen p-5 md:p-10">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-10">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 bg-slate-900 rounded-lg"><Menu size={20}/></button>
+            <div>
+              <h2 className="text-xl font-bold text-white leading-none">
+                {activeSection === 'tasks' && 'การติดตามงาน'}
+                {activeSection === 'repairs' && 'การแจ้งซ่อม'}
+                {activeSection === 'requisitions' && 'การเบิกใช้และพัสดุ'}
+                {activeSection === 'water' && 'บริหารจัดการค่าน้ำ'}
+                {activeSection === 'electric' && 'บริหารจัดการค่าไฟ'}
+              </h2>
+              <p className="text-xs text-slate-500 mt-2 font-medium">จัดการและติดตามสถานะล่าสุดผ่าน Dashboard</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 w-full md:w-auto">
+            <div className="bg-slate-900 p-1 rounded-xl flex border border-slate-800 flex-1 md:flex-none">
+              <button onClick={() => setActiveTab('dashboard')} className={`flex-1 md:px-5 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'dashboard' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500'}`}>สรุปผล</button>
+              <button onClick={() => setActiveTab('list')} className={`flex-1 md:px-5 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'list' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500'}`}>รายการ</button>
+            </div>
+            <button onClick={() => { setEditingItem(null); setShowModal(true); }} className="bg-purple-600 hover:bg-purple-500 text-white p-2.5 rounded-xl shadow-lg shadow-purple-600/20"><Plus size={20}/></button>
+          </div>
+        </header>
+
+        {/* Month Selector */}
+        <div className="mb-6 flex items-center gap-3">
+          <Calendar size={18} className="text-slate-400" />
+          <input 
+            type="month" 
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            className="bg-[#111116] border border-slate-800 rounded-xl px-4 py-2 text-sm text-white focus:border-purple-600 outline-none"
+          />
+          <span className="text-xs text-slate-500">เลือกเดือนที่ต้องการดู</span>
+        </div>
+
+        {activeTab === 'dashboard' ? (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            {/* Standard Dashboard for Tasks & Repairs */}
+            {(activeSection === 'tasks' || activeSection === 'repairs') && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                  <div className="bg-[#111116] border border-slate-800 p-4 rounded-2xl">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">ทั้งหมด</p>
+                    <h3 className="text-2xl font-bold text-white">{stats.total}</h3>
+                  </div>
+                  {STATUS_OPTIONS.map((status, i) => (
+                    <div key={status} className="bg-[#111116] border border-slate-800 p-4 rounded-2xl relative overflow-hidden">
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">{status}</p>
+                      <h3 className="text-2xl font-bold text-white">{stats.counts ? stats.counts[status] : 0}</h3>
+                      <div className="absolute bottom-0 left-0 h-1 transition-all" style={{ width: `${stats.counts && stats.total ? (stats.counts[status]/stats.total)*100 : 0}%`, backgroundColor: COLORS.chart[i] }} />
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="bg-[#111116] border border-slate-800 p-6 rounded-2xl lg:col-span-1">
+                    <h4 className="text-xs font-bold text-white mb-6 uppercase tracking-widest border-l-2 border-purple-600 pl-3">สัดส่วนสถานะ</h4>
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={stats.chartData || []} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                            {stats.chartData && stats.chartData.map((e: any, i: number) => <Cell key={i} fill={e.color} stroke="none" />)}
+                          </Pie>
+                          <Tooltip contentStyle={{ backgroundColor: '#0f0f13', border: 'none', borderRadius: '10px' }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div className="bg-[#111116] border border-slate-800 p-6 rounded-2xl lg:col-span-2">
+                    <h4 className="text-xs font-bold text-white mb-6 uppercase tracking-widest border-l-2 border-purple-600 pl-3">รายการล่าสุด</h4>
+                    <div className="space-y-3">
+                      {filteredItems.slice(0, 4).map((item: any) => (
+                        <div key={item.id} className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-slate-800/50">
+                          <div className="flex items-center gap-3">
+                            <div className="w-2 h-2 rounded-full bg-purple-500" />
+                            <div>
+                              <p className="text-xs font-bold text-white">{item.subject || item.item}</p>
+                              <p className="text-[10px] text-slate-500 font-medium">{item.date}</p>
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-800 px-2 py-1 rounded-lg uppercase tracking-wider">{item.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Requisitions Dashboard */}
+            {activeSection === 'requisitions' && (
+              <div className="bg-[#111116] border border-slate-800 p-6 rounded-2xl">
+                <h4 className="text-xs font-bold text-white mb-6 uppercase tracking-widest">สรุปมูลค่าการเบิกใช้แต่ละแผนก</h4>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={filteredItems as any}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
+                      <XAxis dataKey="department" stroke="#6b7280" fontSize={11} />
+                      <YAxis stroke="#6b7280" fontSize={11} />
+                      <Tooltip cursor={{ fill: '#1f2937' }} contentStyle={{ backgroundColor: '#0f0f13', border: 'none' }} />
+                      <Bar dataKey="value" fill="#a855f7" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+
+            {/* Utility Dashboard */}
+            {billAnalysis && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-[#111116] border border-slate-800 p-5 rounded-2xl">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">มูลค่าเดือนปัจจุบัน</p>
+                    <h3 className="text-3xl font-bold text-white">฿{billAnalysis.current.value.toLocaleString()}</h3>
+                  </div>
+                  <div className="bg-[#111116] border border-slate-800 p-5 rounded-2xl">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">เทียบเดือนเดียวกันปีก่อน</p>
+                    <h3 className="text-3xl font-bold text-slate-400">฿{billAnalysis.lastYear.value.toLocaleString()}</h3>
+                  </div>
+                  <div className={`border p-5 rounded-2xl flex flex-col justify-center ${billAnalysis.diff > 0 ? 'bg-red-500/5 border-red-500/20' : 'bg-green-500/5 border-green-500/20'}`}>
+                    <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: billAnalysis.diff > 0 ? '#f87171' : '#4ade80' }}>มูลค่าส่วนต่าง</p>
+                    <h3 className="text-3xl font-bold" style={{ color: billAnalysis.diff > 0 ? '#f87171' : '#4ade80' }}>
+                      {billAnalysis.diff > 0 ? '+' : ''}{billAnalysis.diff.toLocaleString()} ฿
+                    </h3>
+                  </div>
+                </div>
+                <div className="bg-[#111116] border border-slate-800 p-6 rounded-2xl">
+                  <h4 className="text-xs font-bold text-white mb-10 uppercase tracking-widest">แนวโน้มการใช้งาน 4 เดือนล่าสุด</h4>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={filteredItems.slice(0, 6) as any}>
+                        <defs>
+                          <linearGradient id="colorVal" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
+                        <XAxis dataKey="date" stroke="#6b7280" fontSize={10} />
+                        <YAxis stroke="#6b7280" fontSize={10} />
+                        <Tooltip contentStyle={{ backgroundColor: '#0f0f13', border: 'none' }} />
+                        <Area type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorVal)" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="bg-[#111116] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-5 duration-500">
+            <div className="p-6 border-b border-slate-800 flex flex-col md:flex-row justify-between items-center gap-4">
+              <div className="relative w-full md:w-80">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+                <input 
+                  type="text" 
+                  placeholder="ค้นหา..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl py-2 pl-10 pr-4 text-xs text-white focus:outline-none focus:border-purple-600 transition-all font-medium"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button onClick={exportToExcel} className="flex items-center gap-2 text-[10px] font-bold text-slate-400 hover:text-white transition-all bg-slate-800 px-4 py-2 rounded-lg"><FileSpreadsheet size={14} /> EXCEL</button>
+                <button onClick={exportCSV} className="flex items-center gap-2 text-[10px] font-bold text-slate-400 hover:text-white transition-all bg-slate-800 px-4 py-2 rounded-lg"><FileText size={14} /> CSV</button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-900/50 border-b border-slate-800">
+                    <th className="py-4 px-6 text-[10px] font-bold text-slate-500 uppercase tracking-widest">วันที่</th>
+                    <th className="py-4 px-6 text-[10px] font-bold text-slate-500 uppercase tracking-widest">หัวข้อ / รายการ</th>
+                    <th className="py-4 px-6 text-[10px] font-bold text-slate-500 uppercase tracking-widest">สถานะ / มูลค่า</th>
+                    <th className="py-4 px-6 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/50">
+                  {filteredItems.filter((i: any) => Object.values(i).some((v: any) => String(v).includes(searchQuery))).map((item: any) => (
+                    <tr key={item.id} className="hover:bg-slate-800/20 transition-colors group">
+                      <td className="py-4 px-6 text-xs text-slate-400 font-medium">{item.date}</td>
+                      <td className="py-4 px-6">
+                        <p className="text-xs font-bold text-white mb-1">{item.subject || item.item || item.department}</p>
+                        <p className="text-[10px] text-slate-500 truncate max-w-xs">{item.details || item.docWithdraw || `หน่วยที่ใช้: ${item.units}`}</p>
+                      </td>
+                      <td className="py-4 px-6">
+                        {item.status ? (
+                          <span className="text-[9px] font-black uppercase tracking-widest text-purple-400 bg-purple-400/10 px-2 py-1 rounded-lg">{item.status}</span>
+                        ) : (
+                          <span className="text-xs font-bold text-white">฿{item.value?.toLocaleString()}</span>
+                        )}
+                      </td>
+                      <td className="py-4 px-6">
+                        <div className="flex justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => { setEditingItem(item); setShowModal(true); }} className="p-2 text-slate-500 hover:text-white hover:bg-slate-700 rounded-lg transition-all"><Edit2 size={14}/></button>
+                          <button onClick={() => deleteItem(item.id)} className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"><Trash2 size={14}/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Dynamic Modal */}
+      {showModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0f0f13] border border-slate-800 w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-[#111116]">
+              <h3 className="text-sm font-bold text-white uppercase tracking-widest">{editingItem ? 'แก้ไขข้อมูล' : 'เพิ่มข้อมูลใหม่'}</h3>
+              <button onClick={() => setShowModal(false)} className="p-2 text-slate-500 hover:text-white rounded-xl bg-slate-800"><X size={18}/></button>
+            </div>
+            <form onSubmit={handleSave} className="p-8 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">วันที่</label>
+                  <input name="date" type="date" required defaultValue={editingItem?.date} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                </div>
+
+                {activeSection === 'tasks' && (
+                  <>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">หัวข้องาน</label>
+                      <input name="subject" required defaultValue={editingItem?.subject} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">รายละเอียด</label>
+                      <textarea name="details" defaultValue={editingItem?.details} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white h-24 focus:border-purple-600 outline-none resize-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">ผู้รับผิดชอบ</label>
+                      <input name="responsible" defaultValue={editingItem?.responsible} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">กำหนดเสร็จ</label>
+                      <input name="dueDate" type="date" defaultValue={editingItem?.dueDate} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                  </>
+                )}
+
+                {activeSection === 'repairs' && (
+                  <>
+                    <div className="col-span-2 sm:col-span-1">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">แผนก</label>
+                      <input name="department" defaultValue={editingItem?.department} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">รายการแจ้งซ่อม</label>
+                      <input name="item" required defaultValue={editingItem?.item} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">รายละเอียด</label>
+                      <textarea name="details" defaultValue={editingItem?.details} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white h-20 focus:border-purple-600 outline-none resize-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">งบประมาณ (บาท)</label>
+                      <input name="budget" type="number" defaultValue={editingItem?.budget} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">ผู้รับงาน</label>
+                      <input name="responsible" defaultValue={editingItem?.responsible} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">วันเริ่มต้น</label>
+                      <input name="startDate" type="date" defaultValue={editingItem?.startDate} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">วันสิ้นสุด</label>
+                      <input name="endDate" type="date" defaultValue={editingItem?.endDate} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                  </>
+                )}
+
+                {activeSection === 'requisitions' && (
+                  <>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">แผนก / ฝ่าย</label>
+                      <input name="department" required defaultValue={editingItem?.department} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">เอกสารขอเบิก</label>
+                      <input name="docReq" defaultValue={editingItem?.docReq} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">เอกสารการเบิก</label>
+                      <input name="docWithdraw" defaultValue={editingItem?.docWithdraw} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">มูลค่า (บาท)</label>
+                      <input name="value" type="number" required defaultValue={editingItem?.value} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                  </>
+                )}
+
+                {(activeSection === 'water' || activeSection === 'electric') && (
+                  <>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">เลขเดือนที่แล้ว</label>
+                      <input name="prevReading" type="number" defaultValue={editingItem?.prevReading} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">เลขจดครั้งนี้</label>
+                      <input name="currReading" type="number" defaultValue={editingItem?.currReading} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">จำนวนหน่วย</label>
+                      <input name="units" type="number" defaultValue={editingItem?.units} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">มูลค่ารวม</label>
+                      <input name="value" type="number" required defaultValue={editingItem?.value} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none" />
+                    </div>
+                  </>
+                )}
+
+                {(activeSection === 'tasks' || activeSection === 'repairs') && (
+                  <div className="col-span-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-1 mb-2 block">สถานะงาน</label>
+                    <select name="status" defaultValue={editingItem?.status || 'รอดำเนินการ'} className="w-full bg-[#0a0a0c] border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:border-purple-600 outline-none appearance-none">
+                      {STATUS_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+              <div className="pt-4 flex gap-4">
+                <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-4 text-xs font-bold text-slate-400 bg-slate-800 rounded-2xl">ยกเลิก</button>
+                <button type="submit" className="flex-1 py-4 text-xs font-bold text-white bg-purple-600 rounded-2xl shadow-lg shadow-purple-600/20">บันทึกข้อมูล</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Floating Warning Button */}
+      <div className="fixed bottom-6 right-6 lg:hidden">
+        <button className="w-14 h-14 bg-purple-600 text-white rounded-2xl shadow-2xl flex items-center justify-center animate-bounce">
+          <Bell size={24} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default App;
